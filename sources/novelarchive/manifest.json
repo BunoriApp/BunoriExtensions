@@ -1,7 +1,7 @@
 {
   "id": "novelarchive",
   "name": "Novel Archive",
-  "version": "1.0.1",
+  "version": "1.0.0",
   "apiVersion": 1,
   "lang": "en",
   "baseUrl": "https://novelarchive.cc",

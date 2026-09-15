@@ -1,4 +1,5 @@
 target/
+dist/
 repo/
 !repo/.gitkeep
 tags

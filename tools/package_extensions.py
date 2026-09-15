@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -23,7 +24,6 @@ from pathlib import Path
 
 
 def parse_semver(v: str) -> tuple:
-    """Parse a version string like '1.2.3' into a comparable tuple of integers (1, 2, 3)."""
     if not v:
         return (0,)
     parts = []
@@ -33,30 +33,24 @@ def parse_semver(v: str) -> tuple:
 
 
 def fetch_remote_index(github_repo: str, timeout: int = 15):
-    """
-    Fetch the currently-published index.json from the GitHub Pages 'repo' branch.
-    Returns a dict {id: entry} on success, or None if there's no prior branch yet.
-    """
     if not github_repo:
         return None
-    url = f"https://raw.githubusercontent.com/{github_repo}/repo/index.json"
+    owner, repo_name = github_repo.split("/")
+    url = f"https://{owner.lower()}.github.io/{repo_name}/index.min.json"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "bunori-packager"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             entries = data if isinstance(data, list) else data.get("extensions", [])
             index = {e["id"]: e for e in entries}
-            print(f"Fetched published baseline index.json from repo branch ({len(index)} extension(s)).")
+            print(f"Fetched published baseline index from {url} ({len(index)} extension(s)).")
             return index
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            print("No prior published repo branch found (first run) — treating all extensions as new.")
-        else:
-            print(f"Warning: could not fetch published index.json (HTTP {e.code}). Treating baseline as empty.")
-        return None
-    except Exception as e:  # noqa: BLE001
-        print(f"Warning: could not fetch published index.json ({e}). Treating baseline as empty.")
-        return None
+            print(f"Warning: HTTP {e.code} fetching baseline from {url}")
+
+    print("No prior published baseline found (first run) — treating all extensions as new.")
+    return None
 
 
 def discover_extensions(project_root: Path):
@@ -88,7 +82,7 @@ def compile_extension(ext: dict, project_root: Path):
         "--release"
     ]
     try:
-        res = subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, check=True)
+        subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, check=True)
     except subprocess.CalledProcessError as e:
         print(e.stderr)
         raise RuntimeError(
@@ -102,7 +96,15 @@ def compile_extension(ext: dict, project_root: Path):
     return wasm_file
 
 
-def build_bext(ext: dict, wasm_file: Path, output_dir: Path, icons_dir: Path, github_repo: str | None = None):
+def build_bext(
+    ext: dict,
+    wasm_file: Path,
+    bext_dir: Path,
+    output_dir: Path,
+    icons_dir: Path,
+    github_repo: str | None = None,
+    release_tag: str | None = None,
+):
     ext_id = ext["id"]
     source_dir = ext["_source_dir"]
 
@@ -138,13 +140,19 @@ def build_bext(ext: dict, wasm_file: Path, output_dir: Path, icons_dir: Path, gi
     }
 
     bext_filename = f"{ext_id}.bext"
-    bext_path = output_dir / bext_filename
+    bext_path = bext_dir / bext_filename
 
     with zipfile.ZipFile(bext_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         zf.writestr("manifest.json", json.dumps(manifest, indent=2))
         zf.write(wasm_file, "source.wasm")
         if icon_file and icon_path:
             zf.write(icon_file, icon_path)
+
+    # Copy icon to output_dir if needed for publishing on repo branch
+    if icon_file and icon_path:
+        dest_icon = output_dir / icon_path
+        dest_icon.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(icon_file, dest_icon)
 
     file_bytes = bext_path.read_bytes()
     file_size = len(file_bytes)
@@ -153,9 +161,13 @@ def build_bext(ext: dict, wasm_file: Path, output_dir: Path, icons_dir: Path, gi
     bext_download_url = bext_filename
     icon_url = ext.get("iconUrl")
     if github_repo:
-        bext_download_url = f"https://raw.githubusercontent.com/{github_repo}/repo/{bext_filename}"
+        owner, repo_name = github_repo.split("/")
+        if release_tag:
+            bext_download_url = f"https://github.com/{github_repo}/releases/download/{release_tag}/{bext_filename}"
+        else:
+            bext_download_url = f"https://github.com/{github_repo}/releases/latest/download/{bext_filename}"
         if icon_path and not icon_url:
-            icon_url = f"https://raw.githubusercontent.com/{github_repo}/repo/{icon_path}"
+            icon_url = f"https://{owner.lower()}.github.io/{repo_name}/{icon_path}"
 
     print(f"  ✓ Packaged {ext['name']} (v{ext['version']}) -> {bext_filename} ({file_size / 1024:.1f} KB)")
 
@@ -180,7 +192,8 @@ def build_bext(ext: dict, wasm_file: Path, output_dir: Path, icons_dir: Path, gi
 
 def main():
     parser = argparse.ArgumentParser(description="Package Bunori WASM extensions into .bext archives and build repository index.")
-    parser.add_argument("--out-dir", default="repo", help="Output directory for .bext packages and index.json (default: repo)")
+    parser.add_argument("--out-dir", default="repo", help="Output directory for index.json (default: repo)")
+    parser.add_argument("--bext-dir", default=None, help="Directory to output .bext packages (default: same as --out-dir)")
     parser.add_argument("--single", help="ID of single extension to package")
     parser.add_argument("--compile-all", action="store_true", help="Force compilation of all extensions")
     default_repo = os.environ.get("GITHUB_REPOSITORY", "BunoriApp/BunoriExtensions")
@@ -195,6 +208,13 @@ def main():
 
     output_dir = project_root / args.out_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+    bext_dir = project_root / args.bext_dir if args.bext_dir else output_dir
+    bext_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.bext_dir and args.bext_dir != args.out_dir:
+        for old_bext in output_dir.glob("*.bext"):
+            old_bext.unlink()
+
     icons_dir = project_root / "icons"
 
     extensions = discover_extensions(project_root)
@@ -222,7 +242,7 @@ def main():
                     existing_index = {e["id"]: e for e in entries}
                 print(f"Using local repo/index.json as baseline ({len(existing_index)} extension(s)).")
             except Exception:  # noqa: BLE001
-                print("Skipping");
+                print("Skipping")
 
     final_entries = {}
     changed_or_new_entries = []
@@ -252,7 +272,7 @@ def main():
 
         if should_package:
             wasm_file = compile_extension(ext, project_root)
-            entry = build_bext(ext, wasm_file, output_dir, icons_dir, args.github_repo)
+            entry = build_bext(ext, wasm_file, bext_dir, output_dir, icons_dir, args.github_repo, args.release_tag)
             final_entries[ext_id] = entry
             changed_or_new_entries.append(entry)
 

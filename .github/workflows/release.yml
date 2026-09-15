@@ -36,13 +36,15 @@ jobs:
         env:
           RELEASE_TAG: v${{ github.run_number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python3 tools/package_extensions.py
+        run: python3 tools/package_extensions.py --bext-dir dist --out-dir repo
 
-      - name: Upload full repo directory as build artifact
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: repo-output-v${{ github.run_number }}
-          path: repo/
+          name: extensions-v${{ github.run_number }}
+          path: |
+            dist/*.bext
+            repo/
           retention-days: 30
 
       - name: Check for releasable changes
@@ -52,7 +54,19 @@ jobs:
           echo "release=$HAS_RELEASE" >> "$GITHUB_OUTPUT"
           echo "Release required: $HAS_RELEASE"
 
-      - name: Deploy to repository branch (repo)
+      - name: Create GitHub Release with .bext Assets
+        if: >
+          github.ref == 'refs/heads/main' &&
+          github.event_name == 'push' &&
+          steps.gate.outputs.release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: "Bunori Extensions v${{ github.run_number }}"
+          files: dist/*.bext
+          generate_release_notes: true
+
+      - name: Deploy index to repository branch (repo)
         if: >
           github.ref == 'refs/heads/main' &&
           github.event_name == 'push' &&
@@ -63,4 +77,4 @@ jobs:
           publish_dir: ./repo
           publish_branch: repo
           force_orphan: true
-          commit_message: "deploy: Bunori WASM extensions repository update [skip ci]"
+          commit_message: "deploy: Bunori extensions index update [skip ci]"
