@@ -1,0 +1,13 @@
+{
+  "id": "novgo",
+  "name": "Nov Go",
+  "version": "1.0.1",
+  "apiVersion": 1,
+  "lang": "en",
+  "baseUrl": "https://novgo.net",
+  "iconUrl": "https://novgo.net/favicon.ico",
+  "webviewNeeded": false,
+  "runnerConcurrency": 2,
+  "runnerCooldown": 1000,
+  "maxAttempts": 3
+}

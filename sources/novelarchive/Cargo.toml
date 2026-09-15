@@ -1,0 +1,11 @@
+[package]
+name = "novelarchive"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bunori-sdk.workspace = true
+serde = { workspace = true }

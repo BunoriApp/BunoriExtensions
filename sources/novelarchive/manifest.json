@@ -1,0 +1,13 @@
+{
+  "id": "novelarchive",
+  "name": "Novel Archive",
+  "version": "1.0.1",
+  "apiVersion": 1,
+  "lang": "en",
+  "baseUrl": "https://novelarchive.cc",
+  "iconUrl": "https://novelarchive.cc/favicon.ico",
+  "webviewNeeded": false,
+  "runnerConcurrency": 3,
+  "runnerCooldown": 1000,
+  "maxAttempts": 3
+}

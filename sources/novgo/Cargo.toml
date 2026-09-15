@@ -1,0 +1,10 @@
+[package]
+name = "novgo"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bunori-sdk.workspace = true

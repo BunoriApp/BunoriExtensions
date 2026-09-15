@@ -1,0 +1,11 @@
+[package]
+name = "bunori-sdk"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+scraper.workspace = true
+regex.workspace = true
+getrandom.workspace = true

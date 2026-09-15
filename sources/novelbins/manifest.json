@@ -1,0 +1,13 @@
+{
+  "id": "novelbins",
+  "name": "Novel Bins",
+  "version": "1.0.1",
+  "apiVersion": 1,
+  "lang": "en",
+  "baseUrl": "https://novelbins.com",
+  "iconUrl": "https://novelbins.com/favicon.ico",
+  "webviewNeeded": false,
+  "runnerConcurrency": 3,
+  "runnerCooldown": 1000,
+  "maxAttempts": 3
+}
