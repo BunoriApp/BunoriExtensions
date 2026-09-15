@@ -133,12 +133,22 @@ impl Source for NovelArchiveSource {
 
     fn get_novel_details(&self, novel_url: &str) -> Result<NovelDto, String> {
         let meta = self.metadata();
+        let total_start = host::time_ms();
         let novel_id = Self::extract_id(novel_url)
             .ok_or_else(|| format!("Could not extract novel ID from {}", novel_url))?;
 
+        log_info!("[{}] Starting get_novel_details for ID: {}", meta.id, novel_id);
+
+        let t_fetch0 = host::time_ms();
         let api_url = format!("{}/api/novels/{}", meta.base_url, novel_id);
         let resp = host::get(&api_url, None)?;
+        let t_fetch1 = host::time_ms();
+        log_info!("[{}] Fetched novel detail API in {}ms ({} bytes)", meta.id, t_fetch1 - t_fetch0, resp.len());
+
+        let t_parse0 = host::time_ms();
         let detail_resp: NaDetailResponse = serde_json::from_str(&resp).map_err(|e| e.to_string())?;
+        let t_parse1 = host::time_ms();
+        log_info!("[{}] Parsed novel detail JSON in {}ms", meta.id, t_parse1 - t_parse0);
 
         let novel = detail_resp.novel.ok_or_else(|| "Missing 'novel' object in response".to_string())?;
 
@@ -165,6 +175,7 @@ impl Source for NovelArchiveSource {
                     scanlation: Some(meta.name.clone()),
                 });
             }
+            log_info!("[{}] Created {} primary chapters", meta.id, chapters.len());
         } else {
             let total = novel.total_chapters.and_then(|v| {
                 if let Some(s) = v.as_str() {
@@ -183,21 +194,28 @@ impl Source for NovelArchiveSource {
                     scanlation: Some(meta.name.clone()),
                 });
             }
+            if total > 0 {
+                log_info!("[{}] Created {} synthetic primary chapters", meta.id, total);
+            }
         }
 
         // 2. External sources
         let mut sources = novel.sources;
         if sources.is_empty() {
             let sources_url = format!("{}/api/novels/{}/sources", meta.base_url, novel_id);
+            let t_src0 = host::time_ms();
             if let Ok(src_resp) = host::get(&sources_url, None) {
+                log_info!("[{}] Fetched external sources list in {}ms", meta.id, host::time_ms() - t_src0);
                 if let Ok(parsed) = serde_json::from_str::<NaSourcesResponse>(&src_resp) {
                     sources = parsed.sources;
                 }
             }
         }
 
+        let num_sources = sources.len();
+        log_info!("[{}] Processing {} external source(s)", meta.id, num_sources);
         let mut seen_source_ids = HashSet::new();
-        for src in sources {
+        for (idx, src) in sources.into_iter().enumerate() {
             let src_id = src.id.trim().to_string();
             if src_id.is_empty() || seen_source_ids.contains(&src_id) {
                 continue;
@@ -206,8 +224,16 @@ impl Source for NovelArchiveSource {
             let src_label = src.label.or(src.name).unwrap_or_else(|| src_id.clone());
 
             let chapters_url = format!("{}/api/novels/{}/sources/{}/chapters", meta.base_url, novel_id, src_id);
+            let t_src_ch0 = host::time_ms();
             if let Ok(ch_resp) = host::get(&chapters_url, None) {
+                let fetch_ms = host::time_ms() - t_src_ch0;
+                let t_json0 = host::time_ms();
                 if let Ok(ch_data) = serde_json::from_str::<NaSourceChaptersResponse>(&ch_resp) {
+                    let parse_ms = host::time_ms() - t_json0;
+                    let count = ch_data.chapters.len();
+                    log_info!("[{}] Source [{}/{}] '{}': fetched in {}ms, parsed {} chapters in {}ms",
+                        meta.id, idx + 1, num_sources, src_label, fetch_ms, count, parse_ms);
+
                     for (i, c) in ch_data.chapters.into_iter().enumerate() {
                         let num = c.number.or(c.chapter_number).or(c.index).unwrap_or((i + 1) as i32);
                         let title = c.title.or(c.name).unwrap_or_else(|| format!("Chapter {}", num));
@@ -226,10 +252,16 @@ impl Source for NovelArchiveSource {
                         });
                     }
                 }
+            } else {
+                log_warn!("[{}] Source [{}/{}] '{}': request FAILED in {}ms",
+                    meta.id, idx + 1, num_sources, src_label, host::time_ms() - t_src_ch0);
             }
         }
 
+        let t_sort0 = host::time_ms();
         chapters.sort_by(|a, b| a.index.cmp(&b.index).then_with(|| a.scanlation.cmp(&b.scanlation)));
+        log_info!("[{}] Sorted {} chapters in {}ms", meta.id, chapters.len(), host::time_ms() - t_sort0);
+        log_info!("[{}] TOTAL get_novel_details completed in {}ms", meta.id, host::time_ms() - total_start);
 
         Ok(NovelDto {
             url: novel_url.to_string(),

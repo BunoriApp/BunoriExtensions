@@ -12,6 +12,27 @@ pub use scraper::{self, Html, Selector};
 pub use serde::{self, Deserialize, Serialize};
 pub use serde_json;
 
+#[macro_export]
+macro_rules! log_info {
+    ($($arg:tt)*) => {
+        $crate::host::log(3, &format!($($arg)*))
+    };
+}
+
+#[macro_export]
+macro_rules! log_warn {
+    ($($arg:tt)*) => {
+        $crate::host::log(4, &format!($($arg)*))
+    };
+}
+
+#[macro_export]
+macro_rules! log_error {
+    ($($arg:tt)*) => {
+        $crate::host::log(5, &format!($($arg)*))
+    };
+}
+
 pub trait Source: Default + Send + Sync + 'static {
     fn metadata(&self) -> SourceMetadata;
     fn search(&self, query: &str, page: i32) -> Result<Vec<SearchResultDto>, String>;

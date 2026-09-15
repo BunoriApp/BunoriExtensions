@@ -5,6 +5,11 @@ use std::collections::HashMap;
 extern "C" {
     fn host_http(req_ptr: i32, req_len: i32) -> u64;
     fn host_log(level: i32, msg_ptr: i32, msg_len: i32);
+    fn host_time_ms() -> u64;
+}
+
+pub fn time_ms() -> u64 {
+    unsafe { host_time_ms() }
 }
 
 pub fn log(level: i32, msg: &str) {
