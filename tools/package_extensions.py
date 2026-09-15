@@ -196,7 +196,7 @@ def main():
     parser.add_argument("--bext-dir", default=None, help="Directory to output .bext packages (default: same as --out-dir)")
     parser.add_argument("--single", help="ID of single extension to package")
     parser.add_argument("--compile-all", action="store_true", help="Force compilation of all extensions")
-    default_repo = os.environ.get("GITHUB_REPOSITORY", "BunoriApp/BunoriExtensions")
+    default_repo = os.environ.get("GITHUB_REPOSITORY", "BunoriApp/extensions")
     default_tag = os.environ.get("RELEASE_TAG")
     parser.add_argument("--release-tag", default=default_tag, help="Release tag (e.g. v42)")
     parser.add_argument("--github-repo", default=default_repo, help="GitHub repo in owner/name format")
@@ -279,7 +279,7 @@ def main():
     all_entries = sorted(final_entries.values(), key=lambda x: x["name"])
 
     repo_catalog = {
-        "repoName": "BunoriExtensions",
+        "repoName": "extensions",
         "version": 1,
         "extensions": all_entries
     }
