@@ -28,7 +28,10 @@ Each extension compiles to a WebAssembly module (`source.wasm`) running in a san
 ┌───────────▼─────────────────▼──────────┐
 │           Extension (.bext)            │
 │  ├── manifest.json                     │
-│  └── source.wasm (Pure Rust)           │
+│  ├── source.wasm (Pure Rust Fallback)  │
+│  └── artifacts/                        │
+│      ├── arm64-v8a/extension.aot       │
+│      └── x86_64/extension.aot          │
 └────────────────────────────────────────┘
 ```
 
@@ -58,7 +61,9 @@ BunoriExtensions/
 │   ├── novgo/
 │   └── royalroad/
 ├── tools/
-│   └── package_extensions.py    # Automated WASM builder & .bext packager
+│   └── package_extensions.py    # Automated WASM & WAMR AOT packager
+├── wamr/                        # Pinned WAMR compiler (wamrc)
+│   └── wamrc-2.4.3
 ├── Cargo.toml                   # Root Cargo workspace
 └── README.md
 ```
@@ -88,7 +93,7 @@ BunoriExtensions/
 
 Packaged extensions and the repository index will be created in `repo/`:
 - `repo/index.json` (Catalog consumed by Bunori)
-- `repo/<extension_id>.bext` (Zip container with `manifest.json` + `source.wasm`)
+- `repo/<extension_id>.bext` (Zip container with `manifest.json` + `source.wasm` + `artifacts/<abi>/extension.aot`)
 
 ---
 

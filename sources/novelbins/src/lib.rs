@@ -58,7 +58,13 @@ impl Source for NovelBinsSource {
 
     fn get_novel_details(&self, novel_url: &str) -> Result<NovelDto, String> {
         let meta = self.metadata();
+        let total_start = host::time_ms();
+        log_info!("[{}] Starting get_novel_details for {}", meta.id, novel_url);
+
+        let t_doc0 = host::time_ms();
         let doc = host::document(novel_url, None)?;
+        let t_doc1 = host::time_ms();
+        log_info!("[{}] Fetched and parsed landing page in {}ms", meta.id, t_doc1 - t_doc0);
 
         let title_sel = Selector::parse(".novel-short-info h1").map_err(|e| e.to_string())?;
         let p_sel = Selector::parse(".novel-short-info p").map_err(|e| e.to_string())?;
@@ -109,6 +115,7 @@ impl Source for NovelBinsSource {
         let tab_sel = Selector::parse("a.ch[data-toggle='tab']").map_err(|e| e.to_string())?;
         let tab_links: Vec<_> = doc.select(&tab_sel).collect();
 
+        let t_chap0 = host::time_ms();
         if tab_links.is_empty() {
             if let Ok(ch_sel) = Selector::parse(".chapters .mt-card-item h3.mt-card-name a") {
                 for (i, a) in doc.select(&ch_sel).enumerate() {
@@ -125,7 +132,8 @@ impl Source for NovelBinsSource {
                 }
             }
         } else {
-            for tab in tab_links {
+            log_info!("[{}] Found {} chapter tab(s)", meta.id, tab_links.len());
+            for (tab_i, tab) in tab_links.into_iter().enumerate() {
                 let tab_index = tab.value().attr("href").unwrap_or("").replace('#', "");
                 let ajax_url = format!("{}/ajax/", meta.base_url);
                 let body = format!("action=get_chapters&id={}&tab={}", novel_id, tab_index);
@@ -135,8 +143,15 @@ impl Source for NovelBinsSource {
                 hdrs.insert("Origin".to_string(), meta.base_url.clone());
                 hdrs.insert("Content-Type".to_string(), "application/x-www-form-urlencoded; charset=UTF-8".to_string());
 
+                let t_tab0 = host::time_ms();
                 if let Ok(resp) = host::post(&ajax_url, &body, Some(hdrs)) {
+                    let fetch_ms = host::time_ms() - t_tab0;
+                    let t_j0 = host::time_ms();
                     if let Ok(json_arr) = serde_json::from_str::<Vec<serde_json::Value>>(&resp) {
+                        let parse_ms = host::time_ms() - t_j0;
+                        log_info!("[{}] Tab [{}] (id={}): fetched in {}ms, parsed {} chapters in {}ms",
+                            meta.id, tab_i + 1, tab_index, fetch_ms, json_arr.len(), parse_ms);
+
                         for item in json_arr {
                             let chap_num = item.get("chapter").and_then(|v| v.as_str()).unwrap_or("");
                             let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -154,8 +169,10 @@ impl Source for NovelBinsSource {
                 }
             }
         }
+        log_info!("[{}] Extracted {} chapters in {}ms", meta.id, chapters.len(), host::time_ms() - t_chap0);
 
         chapters.sort_by_key(|c| c.index);
+        log_info!("[{}] TOTAL get_novel_details completed in {}ms", meta.id, host::time_ms() - total_start);
 
         Ok(NovelDto {
             url: novel_url.to_string(),

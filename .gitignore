@@ -3,3 +3,6 @@ dist/
 repo/
 !repo/.gitkeep
 tags
+wamr/
+*.aot
+*.tar.gz

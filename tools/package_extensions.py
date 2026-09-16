@@ -96,9 +96,105 @@ def compile_extension(ext: dict, project_root: Path):
     return wasm_file
 
 
+ABI_TO_WAMRC_TARGET = {
+    "arm64-v8a": "aarch64v8",
+    "x86_64": "x86_64",
+    "armeabi-v7a": "armv7",
+    "x86": "i386",
+}
+
+
+def find_wamrc(project_root: Path, custom_path: str | None = None) -> Path | None:
+    if custom_path:
+        p = Path(custom_path).resolve()
+        if p.exists():
+            return p
+        print(f"Warning: Specified wamrc binary not found at {p}")
+        return None
+
+    env_path = os.environ.get("WAMRC_PATH")
+    if env_path:
+        p = Path(env_path).resolve()
+        if p.exists():
+            return p
+
+    candidates = [
+        project_root / "wamr" / "wamrc-2.4.3",
+        project_root / "wamr" / "wamrc",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+
+    system_wamrc = shutil.which("wamrc")
+    if system_wamrc:
+        return Path(system_wamrc)
+
+    return None
+
+
+def get_supported_wamrc_targets(wamrc_path: Path) -> set[str]:
+    try:
+        res = subprocess.run([str(wamrc_path), "--target=help"], capture_output=True, text=True, check=False)
+        output = res.stdout + res.stderr
+        targets = set()
+        for line in output.splitlines():
+            line = line.strip()
+            if line and not line.lower().startswith("supported targets"):
+                targets.add(line.split()[0])
+        return targets
+    except Exception as e:
+        print(f"Warning: Failed to probe wamrc supported targets: {e}")
+        return set()
+
+
+def compile_extension_aot(
+    ext: dict,
+    wasm_file: Path,
+    wamrc_path: Path,
+    requested_abis: list[str],
+    supported_wamrc_targets: set[str],
+    project_root: Path,
+) -> dict[str, Path]:
+    ext_id = ext["id"]
+    aot_files = {}
+    aot_dir = project_root / "target" / "aot" / ext_id
+    aot_dir.mkdir(parents=True, exist_ok=True)
+
+    for abi in requested_abis:
+        target = ABI_TO_WAMRC_TARGET.get(abi)
+        if not target:
+            print(f"  ⚠ Unknown ABI '{abi}' requested; skipping.")
+            continue
+
+        if supported_wamrc_targets and target not in supported_wamrc_targets:
+            print(f"  ℹ Skipping {abi}: target '{target}' not supported by current wamrc binary.")
+            continue
+
+        output_aot = aot_dir / f"{abi}.aot"
+        print(f"  ⚡ Compiling {ext['name']} ({ext_id}) AOT for {abi} ({target})...")
+        cmd = [
+            str(wamrc_path),
+            f"--target={target}",
+            "--opt-level=3",
+            "--size-level=3",
+            "-o", str(output_aot),
+            str(wasm_file),
+        ]
+        try:
+            subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, check=True)
+            aot_files[abi] = output_aot
+        except subprocess.CalledProcessError as e:
+            err = (e.stderr or e.stdout).strip()
+            print(f"  ⚠ Failed to compile AOT for {abi}: {err}")
+
+    return aot_files
+
+
 def build_bext(
     ext: dict,
     wasm_file: Path,
+    aot_files: dict[str, Path],
     bext_dir: Path,
     output_dir: Path,
     icons_dir: Path,
@@ -133,6 +229,7 @@ def build_bext(
         "baseUrl": ext.get("baseUrl", ""),
         "iconPath": icon_path,
         "iconUrl": ext.get("iconUrl"),
+        "artifacts": sorted(aot_files.keys()),
         "webviewNeeded": ext.get("webviewNeeded", False),
         "runnerConcurrency": ext.get("runnerConcurrency", 3),
         "runnerCooldown": ext.get("runnerCooldown", 1000),
@@ -145,6 +242,8 @@ def build_bext(
     with zipfile.ZipFile(bext_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         zf.writestr("manifest.json", json.dumps(manifest, indent=2))
         zf.write(wasm_file, "source.wasm")
+        for abi, aot_path in sorted(aot_files.items()):
+            zf.write(aot_path, f"artifacts/{abi}/extension.aot")
         if icon_file and icon_path:
             zf.write(icon_file, icon_path)
 
@@ -169,7 +268,8 @@ def build_bext(
         if icon_path and not icon_url:
             icon_url = f"https://{owner.lower()}.github.io/{repo_name}/{icon_path}"
 
-    print(f"  ✓ Packaged {ext['name']} (v{ext['version']}) -> {bext_filename} ({file_size / 1024:.1f} KB)")
+    arch_summary = f" [AOT: {', '.join(sorted(aot_files.keys()))}]" if aot_files else " [WASM only]"
+    print(f"  ✓ Packaged {ext['name']} (v{ext['version']}){arch_summary} -> {bext_filename} ({file_size / 1024:.1f} KB)")
 
     return {
         "id": ext_id,
@@ -183,6 +283,7 @@ def build_bext(
         "bextUrl": bext_download_url,
         "size": file_size,
         "sha256": sha256_hash,
+        "artifacts": sorted(aot_files.keys()),
         "webviewNeeded": ext.get("webviewNeeded", False),
         "runnerConcurrency": ext.get("runnerConcurrency", 3),
         "runnerCooldown": ext.get("runnerCooldown", 1000),
@@ -201,6 +302,9 @@ def main():
     parser.add_argument("--release-tag", default=default_tag, help="Release tag (e.g. v42)")
     parser.add_argument("--github-repo", default=default_repo, help="GitHub repo in owner/name format")
     parser.add_argument("--no-remote-baseline", action="store_true", help="Skip fetching remote baseline index.json")
+    parser.add_argument("--wamrc", help="Path to wamrc binary (default: auto-detect from wamr/wamrc-2.4.3 or PATH)")
+    parser.add_argument("--no-aot", action="store_true", help="Disable WAMR AOT compilation")
+    parser.add_argument("--abis", default="arm64-v8a,x86_64,armeabi-v7a", help="Comma-separated ABIs to compile")
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent
@@ -216,6 +320,25 @@ def main():
             old_bext.unlink()
 
     icons_dir = project_root / "icons"
+
+    wamrc_path = None
+    supported_wamrc_targets = set()
+    requested_abis = [abi.strip() for abi in args.abis.split(",") if abi.strip()]
+
+    if not args.no_aot:
+        wamrc_path = find_wamrc(project_root, args.wamrc)
+        if wamrc_path:
+            if not os.access(wamrc_path, os.X_OK):
+                try:
+                    os.chmod(wamrc_path, 0o755)
+                except Exception:
+                    pass
+            supported_wamrc_targets = get_supported_wamrc_targets(wamrc_path)
+            print(f"Using WAMR compiler: {wamrc_path}")
+            if supported_wamrc_targets:
+                print(f"Supported WAMR targets: {', '.join(sorted(supported_wamrc_targets))}")
+        else:
+            print("Notice: wamrc binary not found. AOT compilation will be skipped (producing pure .wasm packages).")
 
     extensions = discover_extensions(project_root)
     print(f"Found {len(extensions)} extension(s) in source tree.")
@@ -272,7 +395,14 @@ def main():
 
         if should_package:
             wasm_file = compile_extension(ext, project_root)
-            entry = build_bext(ext, wasm_file, bext_dir, output_dir, icons_dir, args.github_repo, args.release_tag)
+            aot_files = {}
+            if wamrc_path and not args.no_aot:
+                aot_files = compile_extension_aot(
+                    ext, wasm_file, wamrc_path, requested_abis, supported_wamrc_targets, project_root
+                )
+            entry = build_bext(
+                ext, wasm_file, aot_files, bext_dir, output_dir, icons_dir, args.github_repo, args.release_tag
+            )
             final_entries[ext_id] = entry
             changed_or_new_entries.append(entry)
 

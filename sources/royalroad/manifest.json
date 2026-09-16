@@ -1,7 +1,7 @@
 {
   "id": "royalroad",
   "name": "Royal Road",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "apiVersion": 1,
   "lang": "en",
   "baseUrl": "https://www.royalroad.com",
