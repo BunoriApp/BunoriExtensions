@@ -33,18 +33,19 @@ jobs:
           python-version: '3.11'
       
       - name: Cache WAMR Compiler
-            id: cache-wamr
-            uses: actions/cache@v4
-            with:
-              path: wamr/
-              key: wamrc-2.4.3
+        id: cache-wamr
+        uses: actions/cache@v4
+        with:
+          path: wamr/
+          key: wamrc-2.4.3
 
-          - name: Download WAMR Compiler
-            if: steps.cache-wamr.outputs.cache-hit != 'true'
-            run: |
-              mkdir -p wamr
-              curl -fsSL https://github.com/${{ github.repository }}/releases/download/toolchain-v2.4.3/wamrc-linux-x86_64-v2.4.3.tar.gz | tar -xz -C wamr/
-              chmod +x wamr/wamrc-2.4.3
+      - name: Download WAMR Compiler
+        if: steps.cache-wamr.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p wamr
+          curl -fsSL https://github.com/${{ github.repository }}/releases/download/toolchain-v2.4.3/wamrc-linux-x86_64-v2.4.3.tar.gz | tar -xz -C wamr/
+          chmod +x wamr/wamrc-2.4.3
+          
       - name: Build & Package Extensions
         env:
           RELEASE_TAG: v${{ github.run_number }}
