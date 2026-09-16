@@ -10,6 +10,7 @@ Release Rule:
 """
 
 import argparse
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -71,29 +72,31 @@ def discover_extensions(project_root: Path):
     return extensions
 
 
-def compile_extension(ext: dict, project_root: Path):
-    ext_id = ext["id"]
-    print(f"  ⚙ Compiling {ext['name']} ({ext_id}) to WebAssembly...")
+def compile_wasm_batch(extensions: list[dict], project_root: Path) -> dict[str, Path]:
+    if not extensions:
+        return {}
 
-    cmd = [
-        "cargo", "build",
-        "--package", ext_id,
-        "--target", "wasm32-unknown-unknown",
-        "--release"
-    ]
+    ext_ids = [ext["id"] for ext in extensions]
+    print(f"\n⚙ Compiling {len(ext_ids)} extension(s) to WebAssembly: {', '.join(ext_ids)}...")
+
+    cmd = ["cargo", "build", "--target", "wasm32-unknown-unknown", "--release"]
+    for ext_id in ext_ids:
+        cmd.extend(["--package", ext_id])
+
     try:
         subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, check=True)
     except subprocess.CalledProcessError as e:
         print(e.stderr)
-        raise RuntimeError(
-            f"Cargo compilation failed for {ext_id}"
-        ) from e
+        raise RuntimeError(f"Cargo compilation failed for {ext_ids}") from e
 
-    crate_name = ext_id.replace("-", "_")
-    wasm_file = project_root / "target" / "wasm32-unknown-unknown" / "release" / f"{crate_name}.wasm"
-    if not wasm_file.exists():
-        raise RuntimeError(f"Expected wasm file not found at {wasm_file}")
-    return wasm_file
+    wasm_files = {}
+    for ext_id in ext_ids:
+        crate_name = ext_id.replace("-", "_")
+        wasm_file = project_root / "target" / "wasm32-unknown-unknown" / "release" / f"{crate_name}.wasm"
+        if not wasm_file.exists():
+            raise RuntimeError(f"Expected wasm file not found at {wasm_file}")
+        wasm_files[ext_id] = wasm_file
+    return wasm_files
 
 
 ABI_TO_WAMRC_TARGET = {
@@ -148,47 +151,95 @@ def get_supported_wamrc_targets(wamrc_path: Path) -> set[str]:
         return set()
 
 
-def compile_extension_aot(
-    ext: dict,
+def compile_single_aot_target(
+    wamrc_path: Path,
     wasm_file: Path,
+    output_aot: Path,
+    target: str,
+    abi: str,
+    ext_name: str,
+    project_root: Path,
+) -> tuple[str, Path | None]:
+    output_aot.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        str(wamrc_path),
+        f"--target={target}",
+        "--opt-level=3",
+        "--size-level=3",
+        "-o", str(output_aot),
+        str(wasm_file),
+    ]
+    try:
+        subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, check=True)
+        return abi, output_aot
+    except subprocess.CalledProcessError as e:
+        err = (e.stderr or e.stdout).strip()
+        print(f"  ⚠ Failed to compile AOT for {ext_name} [{abi}]: {err}")
+        return abi, None
+
+
+def compile_all_aot(
+    extensions: list[dict],
+    wasm_files: dict[str, Path],
     wamrc_path: Path,
     requested_abis: list[str],
     supported_wamrc_targets: set[str],
     project_root: Path,
-) -> dict[str, Path]:
-    ext_id = ext["id"]
-    aot_files = {}
-    aot_dir = project_root / "target" / "aot" / ext_id
-    aot_dir.mkdir(parents=True, exist_ok=True)
+    max_workers: int = 4,
+) -> dict[str, dict[str, Path]]:
+    aot_map: dict[str, dict[str, Path]] = {ext["id"]: {} for ext in extensions}
+    tasks = []
 
-    for abi in requested_abis:
-        target = ABI_TO_WAMRC_TARGET.get(abi)
-        if not target:
-            print(f"  ⚠ Unknown ABI '{abi}' requested; skipping.")
-            continue
+    for ext in extensions:
+        ext_id = ext["id"]
+        wasm_file = wasm_files[ext_id]
+        aot_dir = project_root / "target" / "aot" / ext_id
 
-        if supported_wamrc_targets and target not in supported_wamrc_targets:
-            print(f"  ℹ Skipping {abi}: target '{target}' not supported by current wamrc binary.")
-            continue
+        for abi in requested_abis:
+            target = ABI_TO_WAMRC_TARGET.get(abi)
+            if not target:
+                print(f"  ⚠ Unknown ABI '{abi}' requested; skipping.")
+                continue
 
-        output_aot = aot_dir / f"{abi}.aot"
-        print(f"  ⚡ Compiling {ext['name']} ({ext_id}) AOT for {abi} ({target})...")
-        cmd = [
-            str(wamrc_path),
-            f"--target={target}",
-            "--opt-level=3",
-            "--size-level=3",
-            "-o", str(output_aot),
-            str(wasm_file),
-        ]
-        try:
-            subprocess.run(cmd, cwd=project_root, capture_output=True, text=True, check=True)
-            aot_files[abi] = output_aot
-        except subprocess.CalledProcessError as e:
-            err = (e.stderr or e.stdout).strip()
-            print(f"  ⚠ Failed to compile AOT for {abi}: {err}")
+            if supported_wamrc_targets and target not in supported_wamrc_targets:
+                print(f"  ℹ Skipping {abi} for {ext['name']}: target '{target}' not supported by current wamrc binary.")
+                continue
 
-    return aot_files
+            output_aot = aot_dir / f"{abi}.aot"
+            tasks.append((ext, wasm_file, output_aot, target, abi))
+
+    if not tasks:
+        return aot_map
+
+    workers = min(max_workers, len(tasks))
+    print(f"\n⚡ Compiling {len(tasks)} AOT target(s) across {workers} parallel worker thread(s)...")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_task = {
+            executor.submit(
+                compile_single_aot_target,
+                wamrc_path,
+                wasm_file,
+                output_aot,
+                target,
+                abi,
+                ext["name"],
+                project_root,
+            ): (ext["id"], abi, ext["name"])
+            for ext, wasm_file, output_aot, target, abi in tasks
+        }
+
+        for future in concurrent.futures.as_completed(future_to_task):
+            ext_id, abi, ext_name = future_to_task[future]
+            try:
+                result_abi, output_aot = future.result()
+                if output_aot and output_aot.exists():
+                    aot_map[ext_id][result_abi] = output_aot
+                    print(f"  ✓ Compiled {ext_name} AOT for {abi}")
+            except Exception as e:
+                print(f"  ⚠ Error compiling AOT for {ext_name} [{abi}]: {e}")
+
+    return aot_map
 
 
 def build_bext(
@@ -305,6 +356,7 @@ def main():
     parser.add_argument("--wamrc", help="Path to wamrc binary (default: auto-detect from wamr/wamrc-2.4.3 or PATH)")
     parser.add_argument("--no-aot", action="store_true", help="Disable WAMR AOT compilation")
     parser.add_argument("--abis", default="arm64-v8a,x86_64,armeabi-v7a", help="Comma-separated ABIs to compile")
+    parser.add_argument("--jobs", "-j", type=int, default=os.cpu_count() or 4, help="Number of parallel compilation workers (default: all CPU threads)")
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent
@@ -369,6 +421,7 @@ def main():
 
     final_entries = {}
     changed_or_new_entries = []
+    extensions_to_package = []
 
     print("\nChecking extension versions...")
     for ext in extensions:
@@ -394,12 +447,27 @@ def main():
             final_entries[ext_id] = old_entry
 
         if should_package:
-            wasm_file = compile_extension(ext, project_root)
-            aot_files = {}
-            if wamrc_path and not args.no_aot:
-                aot_files = compile_extension_aot(
-                    ext, wasm_file, wamrc_path, requested_abis, supported_wamrc_targets, project_root
-                )
+            extensions_to_package.append(ext)
+
+    if extensions_to_package:
+        wasm_files = compile_wasm_batch(extensions_to_package, project_root)
+        aot_map = {}
+        if wamrc_path and not args.no_aot:
+            aot_map = compile_all_aot(
+                extensions_to_package,
+                wasm_files,
+                wamrc_path,
+                requested_abis,
+                supported_wamrc_targets,
+                project_root,
+                max_workers=args.jobs,
+            )
+
+        print("\nPackaging .bext archives...")
+        for ext in extensions_to_package:
+            ext_id = ext["id"]
+            wasm_file = wasm_files[ext_id]
+            aot_files = aot_map.get(ext_id, {})
             entry = build_bext(
                 ext, wasm_file, aot_files, bext_dir, output_dir, icons_dir, args.github_repo, args.release_tag
             )
