@@ -420,7 +420,7 @@ def main():
             if not os.access(wamrc_path, os.X_OK):
                 try:
                     os.chmod(wamrc_path, 0o755)
-                except Exception:
+                except Exception:  # noqa: BLE001, S110
                     pass
             supported_wamrc_targets = get_supported_wamrc_targets(wamrc_path)
             print(f"Using WAMR compiler: {wamrc_path}")

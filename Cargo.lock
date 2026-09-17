@@ -267,6 +267,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "novelupdates"
+version = "0.1.0"
+dependencies = [
+ "bunori-sdk",
+]
+
+[[package]]
 name = "novgo"
 version = "0.1.0"
 dependencies = [

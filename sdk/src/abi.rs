@@ -62,9 +62,16 @@ macro_rules! export_source {
         pub extern "C" fn search(query_ptr: i32, query_len: i32, page: i32) -> u64 {
             use $crate::Source;
             let query = unsafe { $crate::abi::read_string(query_ptr, query_len) };
-            let results = get_source().search(&query, page).unwrap_or_default();
-            let json = $crate::serde_json::to_string(&results).unwrap_or_default();
-            $crate::abi::return_string(json)
+            match get_source().search(&query, page) {
+                Ok(results) => {
+                    let json = $crate::serde_json::to_string(&results).unwrap_or_default();
+                    $crate::abi::return_string(json)
+                }
+                Err(e) => {
+                    $crate::host::log(4, &format!("Error in search: {}", e));
+                    0
+                }
+            }
         }
 
         #[no_mangle]
@@ -89,7 +96,11 @@ macro_rules! export_source {
             let url = unsafe { $crate::abi::read_string(url_ptr, url_len) };
             match get_source().get_chapter_content(&url) {
                 Ok(Some(content)) => $crate::abi::return_string(content),
-                _ => 0,
+                Ok(None) => 0,
+                Err(e) => {
+                    $crate::host::log(4, &format!("Error in get_chapter_content: {}", e));
+                    0
+                }
             }
         }
 
@@ -105,9 +116,16 @@ macro_rules! export_source {
         pub extern "C" fn get_listing_novels(id_ptr: i32, id_len: i32, page: i32) -> u64 {
             use $crate::Source;
             let id = unsafe { $crate::abi::read_string(id_ptr, id_len) };
-            let novels = get_source().get_listing_novels(&id, page).unwrap_or_default();
-            let json = $crate::serde_json::to_string(&novels).unwrap_or_default();
-            $crate::abi::return_string(json)
+            match get_source().get_listing_novels(&id, page) {
+                Ok(novels) => {
+                    let json = $crate::serde_json::to_string(&novels).unwrap_or_default();
+                    $crate::abi::return_string(json)
+                }
+                Err(e) => {
+                    $crate::host::log(4, &format!("Error in get_listing_novels: {}", e));
+                    0
+                }
+            }
         }
     };
 }
