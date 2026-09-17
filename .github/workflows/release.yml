@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      compile_all:
+        description: "Force compile and release ALL extensions"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -53,7 +58,14 @@ jobs:
         env:
           RELEASE_TAG: v${{ github.run_number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python3 tools/package_extensions.py --bext-dir dist --out-dir repo
+          COMPILE_ALL: ${{ inputs.compile_all || contains(github.event.head_commit.message, '[compile-all]') }}
+        run: |
+          EXTRA_FLAGS=""
+          if [ "$COMPILE_ALL" = "true" ]; then
+            echo "Forcing compilation of ALL extensions!"
+            EXTRA_FLAGS="--compile-all"
+          fi
+          python3 tools/package_extensions.py --bext-dir dist --out-dir repo $EXTRA_FLAGS
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -74,7 +86,7 @@ jobs:
       - name: Create GitHub Release with .bext Assets
         if: >
           github.ref == 'refs/heads/main' &&
-          github.event_name == 'push' &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
           steps.gate.outputs.release == 'true'
         uses: softprops/action-gh-release@v2
         with:
@@ -86,7 +98,7 @@ jobs:
       - name: Deploy index to repository branch (repo)
         if: >
           github.ref == 'refs/heads/main' &&
-          github.event_name == 'push' &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
           steps.gate.outputs.release == 'true'
         uses: peaceiris/actions-gh-pages@v4
         with:
