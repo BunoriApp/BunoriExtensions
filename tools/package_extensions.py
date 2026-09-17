@@ -54,7 +54,41 @@ def fetch_remote_index(github_repo: str, timeout: int = 15):
     return None
 
 
-def discover_extensions(project_root: Path):
+def get_sdk_version(project_root: Path) -> str:
+    """Reads the SDK major version from sdk/Cargo.toml."""
+    cargo_file = project_root / "sdk" / "Cargo.toml"
+    if cargo_file.exists():
+        for line in cargo_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("version"):
+                raw = line.split("=")[1].strip().strip('"').strip("'")
+                parts = parse_semver(raw)
+                return str(parts[0]) if parts else "1"
+    return "1"
+
+
+def format_compound_version(sdk_version: str, raw_version: str) -> str:
+    """
+    Formats compound extension version as {sdk_version}.{ext_version}.
+    If raw_version is '0.1', returns '1.0.1'.
+    If raw_version is '0.2', returns '1.0.2'.
+    If raw_version is already '1.0.1', replaces the leading major -> '1.0.1'.
+    """
+    raw_version = str(raw_version).strip().lstrip("v")
+    parts = raw_version.split(".")
+    if len(parts) >= 3:
+        # e.g., "1.0.1" -> replaces leading 1 with current sdk_version
+        return f"{sdk_version}." + ".".join(parts[1:])
+    elif len(parts) == 2:
+        # e.g., "0.1" -> "1.0.1"
+        return f"{sdk_version}.{parts[0]}.{parts[1]}"
+    elif len(parts) == 1:
+        # e.g., "1" -> "1.1.0"
+        return f"{sdk_version}.{parts[0]}.0"
+    return f"{sdk_version}.{raw_version}"
+
+
+def discover_extensions(project_root: Path, sdk_version: str = "1"):
     extensions = []
     sources_dir = project_root / "sources"
     if sources_dir.exists():
@@ -66,6 +100,8 @@ def discover_extensions(project_root: Path):
                     with open(manifest_file, "r", encoding="utf-8") as f:
                         manifest = json.load(f)
                         manifest["_source_dir"] = d
+                        manifest["_raw_version"] = manifest.get("version", "0.1")
+                        manifest["version"] = format_compound_version(sdk_version, manifest["_raw_version"])
                         extensions.append(manifest)
                 except Exception as e:  # noqa: BLE001
                     print(f"Warning: Failed to read manifest in {d}: {e}")
@@ -356,6 +392,7 @@ def main():
     parser.add_argument("--wamrc", help="Path to wamrc binary (default: auto-detect from wamr/wamrc-2.4.3 or PATH)")
     parser.add_argument("--no-aot", action="store_true", help="Disable WAMR AOT compilation")
     parser.add_argument("--abis", default="arm64-v8a,x86_64,armeabi-v7a", help="Comma-separated ABIs to compile")
+    parser.add_argument("--sdk-version", help="Override SDK version (default: major version from sdk/Cargo.toml)")
     parser.add_argument("--jobs", "-j", type=int, default=os.cpu_count() or 4, help="Number of parallel compilation workers (default: all CPU threads)")
     args = parser.parse_args()
 
@@ -392,7 +429,9 @@ def main():
         else:
             print("Notice: wamrc binary not found. AOT compilation will be skipped (producing pure .wasm packages).")
 
-    extensions = discover_extensions(project_root)
+    sdk_version = args.sdk_version or get_sdk_version(project_root)
+    print(f"Using SDK version: v{sdk_version}")
+    extensions = discover_extensions(project_root, sdk_version)
     print(f"Found {len(extensions)} extension(s) in source tree.")
 
     if args.single:

@@ -3,6 +3,7 @@ dist/
 repo/
 !repo/.gitkeep
 tags
+__pycache__/
 wamr/
 *.aot
 *.tar.gz
