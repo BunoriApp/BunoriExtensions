@@ -10,8 +10,10 @@ from wasmtime import Engine, Func, FuncType, Linker, Memory, Module, Store, ValT
 
 
 class BunoriHostRunner:
-    def __init__(self, wasm_path: Path):
+    def __init__(self, wasm_path: Path, cookie: str = "", user_agent: str = ""):
         self.wasm_path = wasm_path
+        self.cookie = cookie.strip()
+        self.user_agent = user_agent.strip()
         self.engine = Engine()
         self.store = Store(self.engine)
         self.linker = Linker(self.engine)
@@ -55,11 +57,15 @@ class BunoriHostRunner:
             headers = req_data.get("headers", {})
             body = req_data.get("body")
 
-            if "User-Agent" not in headers and "user-agent" not in headers:
+            if self.user_agent:
+                headers["User-Agent"] = self.user_agent
+            elif "User-Agent" not in headers and "user-agent" not in headers:
                 headers["User-Agent"] = (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
                 )
+
+            if self.cookie and "Cookie" not in headers and "cookie" not in headers:
+                headers["Cookie"] = self.cookie
 
             data_bytes = body.encode("utf-8") if body else None
             http_req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method)
@@ -180,7 +186,15 @@ def main():
     parser.add_argument("--listings", action="store_true", help="Fetch supported ranking listings")
     parser.add_argument("--listing-novels", help="Fetch novels for a listing ID")
     parser.add_argument("--wasm-path", help="Explicit path to .wasm binary")
+    parser.add_argument("--cookie", "-c", default="", help="Cookie header string to pass to HTTP requests")
+    parser.add_argument("--cookie-file", "-f", help="Path to file containing cookies")
+    parser.add_argument("--user-agent", "-u", default="", help="Custom User-Agent string")
     args = parser.parse_args()
+
+    cookie = args.cookie
+    if args.cookie_file:
+        with open(args.cookie_file, "r") as f:
+            cookie = f.read().strip()
 
     project_root = Path(__file__).resolve().parent.parent
     crate_name = args.extension_id.replace("-", "_")
@@ -194,7 +208,7 @@ def main():
         sys.exit(1)
 
     print(f"Loading WASM module: {wasm_path.name}")
-    runner = BunoriHostRunner(wasm_path)
+    runner = BunoriHostRunner(wasm_path, cookie=cookie, user_agent=args.user_agent)
 
     has_action = any([args.metadata, args.search, args.details, args.chapter, args.listings, args.listing_novels])
 

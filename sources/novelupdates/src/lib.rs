@@ -77,86 +77,6 @@ impl NovelUpdatesSource {
         Ok(results)
     }
 
-    /// Parser for NovelUpdates admin-ajax.php (nd_ajaxsearchmain) results
-    fn parse_ajax_search(html: &str, base_url: &str) -> Result<Vec<SearchResultDto>, String> {
-        let doc = Html::parse_fragment(html);
-        let li_sel = Selector::parse("li").map_err(|e| e.to_string())?;
-        let a_sel = Selector::parse("a").map_err(|e| e.to_string())?;
-        let img_sel = Selector::parse("img").map_err(|e| e.to_string())?;
-
-        let mut results = Vec::new();
-        for li in doc.select(&li_sel) {
-            let Some(a_el) = li.select(&a_sel).next() else { continue; };
-            let Some(href) = a_el.value().attr("href") else { continue; };
-            let url = if href.starts_with("http") {
-                href.to_string()
-            } else {
-                format!("{}{}", base_url, href)
-            };
-
-            let title = a_el.text().collect::<Vec<_>>().join("").trim().to_string();
-            if title.is_empty() {
-                continue;
-            }
-
-            let cover_url = li
-                .select(&img_sel)
-                .next()
-                .and_then(|img| img.value().attr("src"))
-                .map(|s| {
-                    if s.starts_with("http") {
-                        s.to_string()
-                    } else {
-                        format!("{}{}", base_url, s)
-                    }
-                });
-
-            results.push(SearchResultDto {
-                url,
-                title,
-                cover_url,
-                author: None,
-            });
-        }
-
-        // If no <li> elements found, fallback to selecting <a> elements directly
-        if results.is_empty() {
-            for a_el in doc.select(&a_sel) {
-                let Some(href) = a_el.value().attr("href") else { continue; };
-                let url = if href.starts_with("http") {
-                    href.to_string()
-                } else {
-                    format!("{}{}", base_url, href)
-                };
-
-                let title = a_el.text().collect::<Vec<_>>().join("").trim().to_string();
-                if title.is_empty() || !url.contains("/series/") {
-                    continue;
-                }
-
-                let cover_url = a_el
-                    .select(&img_sel)
-                    .next()
-                    .and_then(|img| img.value().attr("src"))
-                    .map(|s| {
-                        if s.starts_with("http") {
-                            s.to_string()
-                        } else {
-                            format!("{}{}", base_url, s)
-                        }
-                    });
-
-                results.push(SearchResultDto {
-                    url,
-                    title,
-                    cover_url,
-                    author: None,
-                });
-            }
-        }
-
-        Ok(results)
-    }
 }
 
 impl Source for NovelUpdatesSource {
@@ -168,32 +88,11 @@ impl Source for NovelUpdatesSource {
     fn search(&self, query: &str, page: i32) -> Result<Vec<SearchResultDto>, String> {
         let meta = self.metadata();
         let formatted = query.replace(' ', "+");
-
-        // Primary: NovelUpdates AJAX search endpoint
-        let ajax_url = format!("{}/wp-admin/admin-ajax.php", meta.base_url);
-        let post_body = format!(
-            "action=nd_ajaxsearchmain&strType=desktop&strOne={}&strSearchType=series",
-            formatted
+        let search_url = format!(
+            "{}/series-finder/?sf=1&sh={}&sort=srank&order=asc&pg={}",
+            meta.base_url, formatted, page
         );
-
-        let mut headers = HashMap::new();
-        headers.insert("Content-Type".to_string(), "application/x-www-form-urlencoded".to_string());
-        headers.insert("X-Requested-With".to_string(), "XMLHttpRequest".to_string());
-        headers.insert("Referer".to_string(), format!("{}/", meta.base_url));
-
-        let res_body = host::post(&ajax_url, &post_body, Some(headers))?;
-        let ajax_results = Self::parse_ajax_search(&res_body, &meta.base_url)?;
-        if !ajax_results.is_empty() {
-            return Ok(ajax_results);
-        }
-
-        // Fallback: Standard WordPress series search query
-        let fallback_url = if page <= 1 {
-            format!("{}/?s={}&post_type=seriesposts", meta.base_url, formatted)
-        } else {
-            format!("{}/page/{}/?s={}&post_type=seriesposts", meta.base_url, page, formatted)
-        };
-        let doc = host::document(&fallback_url, None)?;
+        let doc = host::document(&search_url, None)?;
         Self::parse_novel_list(&doc, &meta.base_url)
     }
 
