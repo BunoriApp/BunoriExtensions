@@ -1,0 +1,61 @@
+name: CI Verification
+
+on:
+  pull_request:
+    branches: [ "main" ]
+  push:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Build & Verify Extensions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust & WebAssembly Target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set up Python 3
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache WAMR Compiler
+        id: cache-wamr
+        uses: actions/cache@v4
+        with:
+          path: wamr/
+          key: wamrc-2.4.3
+
+      - name: Download WAMR Compiler
+        if: steps.cache-wamr.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p wamr
+          curl -fsSL https://github.com/${{ github.repository }}/releases/download/toolchain-v2.4.3/wamrc-linux-x86_64-v2.4.3.tar.gz | tar -xz -C wamr/
+          chmod +x wamr/wamrc-2.4.3
+
+      - name: Workspace Compilation Check
+        run: cargo check --target wasm32-unknown-unknown --workspace
+
+      - name: Build & Package All Extensions (Dry Run)
+        run: |
+          python3 tools/package_extensions.py \
+            --compile-all \
+            --no-remote-baseline \
+            --bext-dir /tmp/bext \
+            --out-dir /tmp/repo

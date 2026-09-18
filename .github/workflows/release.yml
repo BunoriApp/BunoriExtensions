@@ -1,9 +1,7 @@
-name: CI & Extension Repository Deployment
+name: Release & Extension Repository Deployment
 
 on:
   push:
-    branches: [ "main" ]
-  pull_request:
     branches: [ "main" ]
   workflow_dispatch:
     inputs:
@@ -95,10 +93,7 @@ jobs:
           echo "Release required: $HAS_RELEASE"
 
       - name: Create GitHub Release with .bext Assets
-        if: >
-          github.ref == 'refs/heads/main' &&
-          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-          steps.gate.outputs.release == 'true'
+        if: steps.gate.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -135,10 +130,7 @@ jobs:
           done
 
       - name: Deploy index to repository branch (repo)
-        if: >
-          github.ref == 'refs/heads/main' &&
-          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-          steps.gate.outputs.release == 'true'
+        if: steps.gate.outputs.release == 'true'
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
