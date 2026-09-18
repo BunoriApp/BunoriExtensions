@@ -383,6 +383,7 @@ def main():
     parser.add_argument("--out-dir", default="repo", help="Output directory for index.json (default: repo)")
     parser.add_argument("--bext-dir", default=None, help="Directory to output .bext packages (default: same as --out-dir)")
     parser.add_argument("--single", help="ID of single extension to package")
+    parser.add_argument("--include", "--extensions", help="Comma-separated list of extension IDs to package")
     parser.add_argument("--compile-all", action="store_true", help="Force compilation of all extensions")
     default_repo = os.environ.get("GITHUB_REPOSITORY", "BunoriApp/extensions")
     default_tag = os.environ.get("RELEASE_TAG")
@@ -434,10 +435,16 @@ def main():
     extensions = discover_extensions(project_root, sdk_version)
     print(f"Found {len(extensions)} extension(s) in source tree.")
 
+    target_ids = set()
     if args.single:
-        extensions = [e for e in extensions if e["id"] == args.single]
+        target_ids.add(args.single)
+    if args.include:
+        target_ids.update(x.strip() for x in args.include.split(",") if x.strip())
+
+    if target_ids:
+        extensions = [e for e in extensions if e["id"] in target_ids]
         if not extensions:
-            print(f"Error: No extension found with id '{args.single}'")
+            print(f"Error: No extension found matching: {', '.join(sorted(target_ids))}")
             sys.exit(1)
 
     existing_index = None

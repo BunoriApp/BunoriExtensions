@@ -21,6 +21,32 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect Changed Extensions
+        id: changes
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="origin/${{ github.base_ref }}"
+            DIFF_FILES=$(git diff --name-only "$BASE"...HEAD)
+          else
+            DIFF_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+          fi
+
+          echo "Changed files in PR / commit:"
+          echo "$DIFF_FILES"
+
+          if echo "$DIFF_FILES" | grep -qE '^(sdk/|tools/|Cargo\.toml|Cargo\.lock|\.github/)'; then
+            echo "Shared infrastructure changed. Full verification required."
+            echo "compile_all=true" >> "$GITHUB_OUTPUT"
+            echo "changed_exts=" >> "$GITHUB_OUTPUT"
+          else
+            EXTS=$(echo "$DIFF_FILES" | grep -E '^sources/' | cut -d'/' -f2 | sort -u | paste -sd, -)
+            echo "compile_all=false" >> "$GITHUB_OUTPUT"
+            echo "changed_exts=$EXTS" >> "$GITHUB_OUTPUT"
+            echo "Changed extensions: ${EXTS:-none}"
+          fi
 
       - name: Set up Rust & WebAssembly Target
         uses: dtolnay/rust-toolchain@stable
@@ -52,10 +78,23 @@ jobs:
       - name: Workspace Compilation Check
         run: cargo check --target wasm32-unknown-unknown --workspace
 
-      - name: Build & Package All Extensions (Dry Run)
+      - name: Build & Package Extensions (Dry Run)
         run: |
-          python3 tools/package_extensions.py \
-            --compile-all \
-            --no-remote-baseline \
-            --bext-dir /tmp/bext \
-            --out-dir /tmp/repo
+          if [ "${{ steps.changes.outputs.compile_all }}" = "true" ]; then
+            echo "⚡ Compiling and verifying ALL extensions..."
+            python3 tools/package_extensions.py \
+              --compile-all \
+              --no-remote-baseline \
+              --bext-dir /tmp/bext \
+              --out-dir /tmp/repo
+          elif [ -n "${{ steps.changes.outputs.changed_exts }}" ]; then
+            echo "⚡ Compiling and verifying changed extension(s): ${{ steps.changes.outputs.changed_exts }}..."
+            python3 tools/package_extensions.py \
+              --compile-all \
+              --include "${{ steps.changes.outputs.changed_exts }}" \
+              --no-remote-baseline \
+              --bext-dir /tmp/bext \
+              --out-dir /tmp/repo
+          else
+            echo "✓ No extension code modified. Skipping packaging dry run."
+          fi
