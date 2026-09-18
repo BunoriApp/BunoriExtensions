@@ -5,21 +5,18 @@ use std::collections::HashMap;
 pub struct NovelUpdatesSource;
 
 impl NovelUpdatesSource {
-    /// Cleans and formats raw chapter titles from NovelUpdates (e.g. "c1" -> "Chapter 1", "v2c3" -> "Volume 2 Chapter 3")
     fn format_chapter_title(raw: &str) -> String {
         let mut text = raw.trim().to_string();
         if text.is_empty() {
             return "Chapter".to_string();
         }
 
-        // Standardize prefixes
         text = text
             .replace('v', "Volume ")
             .replace('c', " Chapter ")
             .replace("part", " Part ")
             .replace("ss", " SS ");
 
-        // Capitalize first letters of words
         let capitalized = text
             .split_whitespace()
             .map(|word| {
@@ -35,7 +32,6 @@ impl NovelUpdatesSource {
         capitalized
     }
 
-    /// Shared parser for NovelUpdates search and listing pages
     fn parse_novel_list(doc: &Html, base_url: &str) -> Result<Vec<SearchResultDto>, String> {
         let item_sel = Selector::parse("div.search_main_box_nu, div.w-blog-entry, .search_body_nu").map_err(|e| e.to_string())?;
         let title_sel = Selector::parse(".search_title > a, .w-blog-entry-title a, h2 a").map_err(|e| e.to_string())?;
@@ -158,7 +154,6 @@ impl Source for NovelUpdatesSource {
             }
         });
 
-        // NovelUpdates loads chapters dynamically via AJAX using `mypostid`
         let post_id_sel = Selector::parse("input#mypostid").map_err(|e| e.to_string())?;
         let post_id = doc
             .select(&post_id_sel)
