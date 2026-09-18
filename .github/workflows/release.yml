@@ -26,6 +26,17 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine Release Tag
+        id: tag
+        run: |
+          COMMIT_COUNT=$(git rev-list --count HEAD)
+          TAG="v${COMMIT_COUNT}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "commit_count=$COMMIT_COUNT" >> "$GITHUB_OUTPUT"
+          echo "Calculated release tag: $TAG (commit #$COMMIT_COUNT on main branch)"
 
       - name: Set up Rust & WebAssembly Target
         uses: dtolnay/rust-toolchain@stable
@@ -56,7 +67,7 @@ jobs:
           
       - name: Build & Package Extensions
         env:
-          RELEASE_TAG: v${{ github.run_number }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           COMPILE_ALL: ${{ inputs.compile_all || contains(github.event.head_commit.message, '[compile-all]') }}
         run: |
@@ -70,7 +81,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: extensions-v${{ github.run_number }}
+          name: extensions-${{ steps.tag.outputs.tag }}
           path: |
             dist/*.bext
             repo/
@@ -88,12 +99,40 @@ jobs:
           github.ref == 'refs/heads/main' &&
           (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
           steps.gate.outputs.release == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ github.run_number }}
-          name: "Bunori Extensions v${{ github.run_number }}"
-          files: dist/*.bext
-          generate_release_notes: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          echo "Publishing GitHub Release $TAG..."
+
+          # Create release if it does not already exist
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --target "${{ github.sha }}" \
+              --title "Bunori Extensions $TAG" \
+              --generate-notes
+          fi
+
+          # Upload each .bext asset sequentially with retry
+          for file in dist/*.bext; do
+            [ -e "$file" ] || continue
+            echo "Uploading $file to release $TAG..."
+            uploaded=false
+            for attempt in 1 2 3; do
+              if gh release upload "$TAG" "$file" --clobber; then
+                uploaded=true
+                echo "Successfully uploaded $file"
+                break
+              fi
+              echo "Upload of $file failed (attempt $attempt/3), retrying in 3s..."
+              sleep 3
+            done
+
+            if [ "$uploaded" != "true" ]; then
+              echo "Error: Failed to upload $file to release $TAG after 3 attempts."
+              exit 1
+            fi
+          done
 
       - name: Deploy index to repository branch (repo)
         if: >
