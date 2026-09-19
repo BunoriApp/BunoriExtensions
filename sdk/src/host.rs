@@ -29,7 +29,7 @@ pub fn http_request(req: &HttpRequest) -> Result<HttpResponse, String> {
     let res_ptr = (packed & 0xFFFF_FFFF) as i32;
     let res_len = (packed >> 32) as i32;
     let res_json = unsafe { crate::abi::read_string(res_ptr, res_len) };
-    crate::abi::dealloc(res_ptr as *mut u8, res_len + 1);
+    crate::abi::dealloc(res_ptr as *mut u8, res_len);
     let res: HttpResponse = serde_json::from_str(&res_json)
         .map_err(|e| format!("Failed to parse HTTP response: {}: {}", e, res_json))?;
     Ok(res)
