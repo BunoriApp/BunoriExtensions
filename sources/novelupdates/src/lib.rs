@@ -271,6 +271,7 @@ impl Source for NovelUpdatesSource {
             ".reader-content",
             "#chapter-content",
             ".chapter-text",
+            ".content-wrapper",
             "#content",
             "#the-content",
             "article.post",
