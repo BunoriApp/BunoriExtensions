@@ -6,6 +6,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+try:
+    from curl_cffi import requests as curl_requests
+except ImportError:
+    curl_requests = None
+
 from wasmtime import Engine, Func, FuncType, Linker, Memory, Module, Store, ValType
 
 
@@ -68,21 +73,39 @@ class BunoriHostRunner:
                 headers["Cookie"] = self.cookie
 
             data_bytes = body.encode("utf-8") if body else None
-            http_req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method)
 
-            try:
-                with urllib.request.urlopen(http_req, timeout=15) as resp:
-                    resp_body = resp.read().decode("utf-8", errors="replace")
-                    status_code = resp.status
+            if curl_requests is not None:
+                try:
+                    resp = curl_requests.request(
+                        method=method,
+                        url=url,
+                        data=data_bytes,
+                        headers=headers,
+                        impersonate="chrome",
+                        timeout=30,
+                    )
+                    status_code = resp.status_code
+                    resp_body = resp.text
                     resp_headers = dict(resp.headers)
-            except urllib.error.HTTPError as e:
-                status_code = e.code
-                resp_body = e.read().decode("utf-8", errors="replace")
-                resp_headers = dict(e.headers)
-            except Exception as e:  # noqa: BLE001
-                status_code = 500
-                resp_body = f"Network error: {e}"
-                resp_headers = {}
+                except Exception as e:  # noqa: BLE001
+                    status_code = 500
+                    resp_body = f"Network error: {e}"
+                    resp_headers = {}
+            else:
+                http_req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method)
+                try:
+                    with urllib.request.urlopen(http_req, timeout=15) as resp:
+                        resp_body = resp.read().decode("utf-8", errors="replace")
+                        status_code = resp.status
+                        resp_headers = dict(resp.headers)
+                except urllib.error.HTTPError as e:
+                    status_code = e.code
+                    resp_body = e.read().decode("utf-8", errors="replace")
+                    resp_headers = dict(e.headers)
+                except Exception as e:  # noqa: BLE001
+                    status_code = 500
+                    resp_body = f"Network error: {e}"
+                    resp_headers = {}
 
             res_payload = json.dumps({
                  "status_code": status_code,

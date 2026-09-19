@@ -6,30 +6,57 @@ pub struct NovelUpdatesSource;
 
 impl NovelUpdatesSource {
     fn format_chapter_title(raw: &str) -> String {
-        let mut text = raw.trim().to_string();
-        if text.is_empty() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
             return "Chapter".to_string();
         }
 
-        text = text
-            .replace('v', "Volume ")
-            .replace('c', " Chapter ")
-            .replace("part", " Part ")
-            .replace("ss", " SS ");
+        let lower = trimmed.to_lowercase();
+        let processed = if lower.starts_with("chapter") || lower.starts_with("volume") {
+            trimmed.to_string()
+        } else {
+            let mut s = trimmed.to_string();
+            // Match lnreader transformation: replace 'v' with 'volume ' and 'c' with ' chapter '
+            if let Some(pos) = s.to_lowercase().find('v') {
+                let after = s[pos + 1..].trim_start();
+                if after.starts_with(|c: char| c.is_ascii_digit()) {
+                    s = format!("{}Volume {}", &s[..pos], after);
+                }
+            }
+            if let Some(pos) = s.to_lowercase().find('c') {
+                let after = s[pos + 1..].trim_start();
+                if after.starts_with(|c: char| c.is_ascii_digit()) {
+                    s = format!("{} Chapter {}", &s[..pos], after);
+                }
+            }
+            s
+        };
 
-        let capitalized = text
+        let capitalized = processed
+            .replace("part", " Part ")
+            .replace("Part", " Part ")
+            .replace("ss", " SS ")
+            .replace("SS", " SS ")
             .split_whitespace()
             .map(|word| {
-                let mut chars = word.chars();
-                match chars.next() {
-                    None => String::new(),
-                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                if word.eq_ignore_ascii_case("ss") {
+                    "SS".to_string()
+                } else {
+                    let mut chars = word.chars();
+                    match chars.next() {
+                        None => String::new(),
+                        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    }
                 }
             })
             .collect::<Vec<_>>()
             .join(" ");
 
-        capitalized
+        if capitalized.is_empty() {
+            "Chapter".to_string()
+        } else {
+            capitalized
+        }
     }
 
     fn extract_chapter_number(raw: &str, fallback: i32) -> i32 {
@@ -93,7 +120,7 @@ impl NovelUpdatesSource {
         Ok(results)
     }
 
-    fn parse_chapters(html: &str, group_name: Option<&str>, base_url: &str) -> Vec<ChapterDto> {
+    fn parse_chapters(html: &str, base_url: &str) -> Vec<ChapterDto> {
         let Ok(li_sel) = Selector::parse("li.sp_li_chp") else {
             return Vec::new();
         };
@@ -102,74 +129,87 @@ impl NovelUpdatesSource {
         };
         let doc = Html::parse_fragment(html);
 
-        let mut chapters = Vec::new();
+        let mut raw_chapters = Vec::new();
         for el in doc.select(&li_sel) {
-            for a in el.select(&a_sel) {
-                let href = a.value().attr("href").unwrap_or("");
-                if href.contains("/extnu/") {
-                    let ch_url = if href.starts_with("//") {
-                        format!("https:{}", href)
-                    } else if href.starts_with('/') {
-                        format!("{}{}", base_url, href)
-                    } else {
-                        href.to_string()
-                    };
-
-                    let name = a.text().collect::<Vec<_>>().join("").trim().to_string();
-                    let title = Self::format_chapter_title(&name);
-                    let index = Self::extract_chapter_number(&name, (chapters.len() + 1) as i32);
-                    chapters.push(ChapterDto {
-                        url: ch_url,
-                        title,
-                        index,
-                        release_date: None,
-                        scanlation: group_name.map(|s| s.to_string()),
-                    });
-                    break;
-                }
+            let a_elements: Vec<_> = el.select(&a_sel).collect();
+            if a_elements.is_empty() {
+                continue;
             }
+
+            // Match lnreader:
+            // const chapterPath = 'https:' + chaptersCheerio(el).find('a').first().next().attr('href');
+            // The chapter link is the 2nd <a> (first().next()), or any <a> containing /extnu/
+            let ch_a = a_elements
+                .iter()
+                .find(|a| a.value().attr("href").map_or(false, |h| h.contains("/extnu/")))
+                .copied()
+                .or_else(|| {
+                    if a_elements.len() >= 2 {
+                        Some(a_elements[1])
+                    } else {
+                        a_elements.first().copied()
+                    }
+                });
+
+            let Some(ch_a_el) = ch_a else { continue; };
+            let Some(href) = ch_a_el.value().attr("href") else { continue; };
+            let href = href.trim();
+            if href.is_empty() {
+                continue;
+            }
+
+            let ch_url = if href.starts_with("//") {
+                format!("https:{}", href)
+            } else if href.starts_with('/') {
+                format!("{}{}", base_url, href)
+            } else if href.starts_with("http://") || href.starts_with("https://") {
+                href.to_string()
+            } else {
+                format!("{}/{}", base_url, href)
+            };
+
+            // In lnreader: chapter title is parsed from el.text(), or chapter link text
+            let link_text = ch_a_el.text().collect::<Vec<_>>().join("").trim().to_string();
+            let raw_name = if !link_text.is_empty() {
+                link_text
+            } else {
+                el.text().collect::<Vec<_>>().join("").trim().to_string()
+            };
+
+            let title = Self::format_chapter_title(&raw_name);
+
+            // Scanlation group name: if first <a> is a group link distinct from chapter <a>
+            let scanlation = if a_elements.len() >= 2 && ch_a != Some(a_elements[0]) {
+                let grp = a_elements[0].text().collect::<Vec<_>>().join("").trim().to_string();
+                if !grp.is_empty() {
+                    Some(grp)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            raw_chapters.push((ch_url, title, raw_name, scanlation));
         }
 
         // NovelUpdates returns chapters in reverse chronological order (newest first).
-        // Reverse so Chapter 1 / 0 comes first.
-        chapters.reverse();
-        chapters
-    }
+        // Reverse so Chapter 1 comes first, matching lnreader: novel.chapters = chapters.reverse()
+        raw_chapters.reverse();
 
-    fn fetch_groups(
-        ajax_url: &str,
-        post_id: &str,
-        headers: &HashMap<String, String>,
-    ) -> Vec<(String, String)> {
-        let group_form = format!("action=nd_getgroupnovel&mygrr=0&mypostid={}", post_id);
-        let Ok(group_html) = host::post(ajax_url, &group_form, Some(headers.clone())) else {
-            return Vec::new();
-        };
-
-        let group_doc = Html::parse_fragment(&group_html);
-        let Ok(input_sel) = Selector::parse("input.grp-filter-attr") else {
-            return Vec::new();
-        };
-
-        let mut groups = Vec::new();
-        for input in group_doc.select(&input_sel) {
-            if let Some(grp_id) = input.value().attr("value") {
-                let id_attr = input.value().attr("id").unwrap_or("");
-                let label_sel_str = format!("label[for='{}']", id_attr);
-                let group_name = if let Ok(lbl_sel) = Selector::parse(&label_sel_str) {
-                    group_doc
-                        .select(&lbl_sel)
-                        .next()
-                        .map(|lbl| lbl.text().collect::<Vec<_>>().join("").trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| grp_id.to_string())
-                } else {
-                    grp_id.to_string()
-                };
-                groups.push((grp_id.to_string(), group_name));
-            }
+        let mut chapters = Vec::with_capacity(raw_chapters.len());
+        for (i, (ch_url, title, raw_name, scanlation)) in raw_chapters.into_iter().enumerate() {
+            let index = Self::extract_chapter_number(&raw_name, (i + 1) as i32);
+            chapters.push(ChapterDto {
+                url: ch_url,
+                title,
+                index,
+                release_date: None,
+                scanlation,
+            });
         }
-        groups
+
+        chapters
     }
 }
 
@@ -181,10 +221,19 @@ impl Source for NovelUpdatesSource {
 
     fn search(&self, query: &str, page: i32) -> Result<Vec<SearchResultDto>, String> {
         let meta = self.metadata();
-        let formatted = query.replace(' ', "+");
+        let longest = query
+            .split('*')
+            .max_by_key(|s| s.len())
+            .unwrap_or(query);
+        let cleaned = longest
+            .replace(['\u{2018}', '\u{2019}'], "'")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join("+");
+
         let search_url = format!(
             "{}/series-finder/?sf=1&sh={}&sort=srank&order=asc&pg={}",
-            meta.base_url, formatted, page
+            meta.base_url, cleaned, page
         );
         let doc = host::document(&search_url, None)?;
         Self::parse_novel_list(&doc, &meta.base_url)
@@ -219,10 +268,26 @@ impl Source for NovelUpdatesSource {
                 }
             });
 
-        let description = doc
+        let type_sel = Selector::parse("#showtype").ok();
+        let novel_type = type_sel.and_then(|sel| {
+            doc.select(&sel)
+                .next()
+                .map(|t| t.text().collect::<Vec<_>>().join("").trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+
+        let mut description = doc
             .select(&desc_sel)
             .next()
             .map(|d| d.text().collect::<Vec<_>>().join("\n").trim().to_string());
+
+        if let Some(nt) = novel_type {
+            if let Some(ref mut desc) = description {
+                desc.push_str(&format!("\n\nType: {}", nt));
+            } else {
+                description = Some(format!("Type: {}", nt));
+            }
+        }
 
         let author = {
             let authors: Vec<String> = doc
@@ -270,35 +335,15 @@ impl Source for NovelUpdatesSource {
         );
         headers.insert("Referer".to_string(), novel_url.to_string());
 
-        // Fetch translation groups for group attribution
-        let groups = Self::fetch_groups(&ajax_url, &post_id, &headers);
-
-        let mut chapters = Vec::new();
-        if groups.len() <= 1 {
-            let form_body = format!("action=nd_getchapters&mygrr=0&mypostid={}", post_id);
-            if let Ok(html) = host::post(&ajax_url, &form_body, Some(headers)) {
-                let group_name = groups.first().map(|(_, name)| name.as_str());
-                chapters = Self::parse_chapters(&html, group_name, &meta.base_url);
+        // Match lnreader-plugins: single POST to admin-ajax.php with action=nd_getchapters&mygrr=0&mypostid=...
+        let form_body = format!("action=nd_getchapters&mygrr=0&mypostid={}", post_id);
+        let chapters = match host::post(&ajax_url, &form_body, Some(headers)) {
+            Ok(html) => Self::parse_chapters(&html, &meta.base_url),
+            Err(e) => {
+                log_warn!("Failed to fetch chapters for novel {}: {}", novel_url, e);
+                Vec::new()
             }
-        } else {
-            for (grp_id, group_name) in &groups {
-                let form_body = format!(
-                    "action=nd_getchapters&mygrr=0&mygrpfilter={}&mypostid={}",
-                    grp_id, post_id
-                );
-                if let Ok(html) = host::post(&ajax_url, &form_body, Some(headers.clone())) {
-                    let group_chapters = Self::parse_chapters(&html, Some(group_name), &meta.base_url);
-                    chapters.extend(group_chapters);
-                }
-            }
-
-            if chapters.is_empty() {
-                let form_body = format!("action=nd_getchapters&mygrr=0&mypostid={}", post_id);
-                if let Ok(html) = host::post(&ajax_url, &form_body, Some(headers)) {
-                    chapters = Self::parse_chapters(&html, None, &meta.base_url);
-                }
-            }
-        }
+        };
 
         Ok(NovelDto {
             url: novel_url.to_string(),
@@ -361,8 +406,23 @@ impl Source for NovelUpdatesSource {
         for sel_str in &content_selectors {
             if let Ok(sel) = Selector::parse(sel_str) {
                 if let Some(el) = doc.select(&sel).next() {
-                    matched_content = Some(el.inner_html());
-                    break;
+                    let inner = el.inner_html();
+                    if inner.trim().len() > 50 {
+                        matched_content = Some(inner);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Fallback to article, main, or body if no specific content container matched
+        if matched_content.is_none() {
+            if let Ok(fallback_sel) = Selector::parse("article, main, body") {
+                if let Some(el) = doc.select(&fallback_sel).next() {
+                    let inner = el.inner_html();
+                    if inner.trim().len() > 50 {
+                        matched_content = Some(inner);
+                    }
                 }
             }
         }
